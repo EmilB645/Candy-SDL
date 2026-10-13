@@ -7,37 +7,79 @@
 <title>מעבדת הטעמים</title>
 <style>
   body{margin:0;min-height:100dvh;display:grid;place-items:center;font-family:Arial,"Noto Sans Hebrew",sans-serif;color:#153c39;background:#f4f6f5;text-align:center;padding:24px;box-sizing:border-box}
-  p{font-size:18px;line-height:1.6;margin:0 0 16px}
+  p{font-size:18px;line-height:1.6;margin:0 0 12px}
+  .sub{font-size:15px;color:#41556b;min-height:24px}
   button{font:700 17px Arial,sans-serif;border:0;border-radius:12px;padding:14px 22px;background:#153c39;color:#d9ff72;min-height:52px}
+  a{color:#153c39;font-size:16px}
+  .spin{width:34px;height:34px;margin:0 auto 18px;border:5px solid #d6dfda;border-top-color:#153c39;border-radius:50%;animation:s 1s linear infinite}
+  .spin[hidden]{display:none}
+  @keyframes s{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 <div>
-  <p id="msg">מעבירים אותך לניסוי…</p>
-  <button id="retry" hidden onclick="go()">נסו שוב</button>
+  <div class="spin" id="spin" aria-hidden="true"></div>
+  <p id="msg" role="status" aria-live="polite">מתחברים לניסוי…</p>
+  <p class="sub" id="sub"></p>
+  <button id="retry" hidden>נסו שוב</button>
+  <p id="direct" hidden><a id="directlink" href="#">אם זה לא עובד, לפתיחה ישירה</a></p>
 </div>
 <script>
-// The live server address lives in target.txt (one line). Edit only that file.
-// It is fetched with a cache-buster, so an update works immediately even though
-// GitHub Pages caches this HTML for ~10 minutes.
+// Redirect page (v13). Finds the address of the live server and sends the visitor there.
+// The address is read from TWO places, and only an address that actually answers is used:
+//   1) target.txt in the GitHub repo itself: updates right after a commit (GitHub caches it up to ~5 minutes)
+//   2) target.txt served by GitHub Pages: updates after the Pages deployment finishes
+// If the server was just started and is not reachable yet, the page keeps trying by itself (no error page for the visitor).
 // Optional page: ?to=admin.html | results.html | operator.html | display.html
+const OWNER = 'EmilB645', REPO = 'Candy-SDL', BRANCH = 'main';
+const SOURCES = ['https://raw.githubusercontent.com/' + OWNER + '/' + REPO + '/' + BRANCH + '/target.txt', 'target.txt'];
 const PAGES = ['', 'admin.html', 'results.html', 'operator.html', 'display.html'];
-async function go(){
-  document.getElementById('retry').hidden = true;
-  document.getElementById('msg').textContent = 'מעבירים אותך לניסוי…';
-  // strip invisible/odd characters (e.g. LRM copied with a link) and a stray trailing slash
-  const to = (new URLSearchParams(location.search).get('to') || '').replace(/[^A-Za-z0-9._-]/g, '');
+const RETRY_MS = 3000, MAX_TRIES = 30, PROBE_MS = 4000;
+const $ = id => document.getElementById(id);
+// strip invisible/odd characters (e.g. a hidden mark copied with a link)
+const to = (new URLSearchParams(location.search).get('to') || '').replace(/[^A-Za-z0-9._-]/g, '');
+const suffix = '/' + (PAGES.includes(to) ? to : '');
+let running = false;
+
+async function readTarget(src){
   try {
-    const r = await fetch('target.txt?ts=' + Date.now(), {cache: 'no-store'});
-    const target = (await r.text()).trim().replace(/\/+$/, '');
-    if (!/^https:\/\/[^\s]+$/.test(target)) throw new Error('bad target');
-    location.replace(target + '/' + (PAGES.includes(to) ? to : ''));
-  } catch (e) {
-    document.getElementById('msg').textContent = 'השרת לא זמין כרגע. נסו שוב בעוד דקה.';
-    document.getElementById('retry').hidden = false;
-  }
+    const url = src.indexOf('http') === 0 ? src : src + '?ts=' + Date.now();
+    const text = (await (await fetch(url)).text()).trim().replace(/\/+$/, '');
+    return /^https:\/\/[^\s]+$/.test(text) ? text : null;
+  } catch (e) { return null; }
 }
-go();
+async function alive(base){
+  const ac = new AbortController(), timer = setTimeout(() => ac.abort(), PROBE_MS);
+  try { return (await fetch(base + '/api/config/public?ts=' + Date.now(), {signal: ac.signal})).ok; }
+  catch (e) { return false; }
+  finally { clearTimeout(timer); }
+}
+async function findServer(){
+  const found = Array.from(new Set((await Promise.all(SOURCES.map(readTarget))).filter(Boolean)));
+  const ok = await Promise.all(found.map(alive));
+  const i = ok.indexOf(true);
+  return {found: found, base: i >= 0 ? found[i] : null};
+}
+function go(url){ location.replace(url); }
+async function start(){
+  if (running) return;
+  running = true; $('retry').hidden = true; $('direct').hidden = true; $('spin').hidden = false;
+  let last = [];
+  for (let n = 1; n <= MAX_TRIES; n++) {
+    $('msg').textContent = 'מתחברים לניסוי…';
+    $('sub').textContent = n > 2 ? 'אם השרת הופעל הרגע, זה יכול לקחת עד דקה. הדף ממשיך לנסות לבד.' : '';
+    const r = await findServer(); last = r.found;
+    if (r.base) { go(r.base + suffix); return; }
+    await new Promise(res => setTimeout(res, RETRY_MS));
+  }
+  running = false; $('spin').hidden = true;
+  $('msg').textContent = 'השרת לא זמין כרגע. נסו שוב בעוד דקה.';
+  $('sub').textContent = '';
+  $('retry').hidden = false;
+  if (last[0]) { $('directlink').href = last[0] + suffix; $('direct').hidden = false; }
+}
+$('retry').onclick = start;
+start();
 </script>
 </body>
 </html>
